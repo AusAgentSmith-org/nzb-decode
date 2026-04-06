@@ -239,6 +239,11 @@ impl FileAssembler {
         // Atomic bitmap update — no write-lock needed.
         let complete = state.mark_written(segment_number);
         if complete {
+            // Flush data to disk so downstream consumers (e.g. direct unpack)
+            // can safely read the file immediately after completion.
+            if let Err(e) = state.file.sync_data() {
+                debug!(job_id, file_id, error = %e, "sync_data failed on completed file");
+            }
             info!(
                 job_id,
                 file_id,
