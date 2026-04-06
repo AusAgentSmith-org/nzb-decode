@@ -15,7 +15,7 @@ jobs:
     runs-on: [self-hosted, node-b]
     name: Build & Test
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: dtolnay/rust-toolchain@stable
         with:
