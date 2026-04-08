@@ -33,6 +33,8 @@ pub enum AssemblerError {
     FileNotRegistered { job_id: String, file_id: String },
     #[error("Segment number {segment} out of range (1..={total})")]
     SegmentOutOfRange { segment: u32, total: u32 },
+    #[error("Empty segment data for segment {segment} — decoded to zero bytes")]
+    EmptySegmentData { segment: u32 },
 }
 
 pub type AssemblerResult<T> = std::result::Result<T, AssemblerError>;
@@ -207,6 +209,14 @@ impl FileAssembler {
             return Err(AssemblerError::SegmentOutOfRange {
                 segment: segment_number,
                 total: state.total_segments,
+            });
+        }
+
+        // Reject empty decoded data — writing zero bytes is a no-op that
+        // silently produces incomplete files (the NZBGet v26.1 bug).
+        if data.is_empty() {
+            return Err(AssemblerError::EmptySegmentData {
+                segment: segment_number,
             });
         }
 
@@ -507,5 +517,95 @@ mod tests {
 
         assert_eq!(fs::read(&path_a).unwrap(), b"AAA");
         assert_eq!(fs::read(&path_b).unwrap(), b"BBB");
+    }
+
+    // -----------------------------------------------------------------------
+    // Empty segment data tests (NZBGet v26.1 bug prevention)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_empty_data_rejected() {
+        let tmp = TempDir::new().unwrap();
+        let assembler = FileAssembler::new();
+        setup_file(&assembler, tmp.path(), "j1", "f1", "empty.bin", 2);
+
+        let result = assembler.assemble_article("j1", "f1", 1, 0, b"");
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            AssemblerError::EmptySegmentData { segment } => {
+                assert_eq!(segment, 1);
+            }
+            other => panic!("Expected EmptySegmentData, got: {other}"),
+        }
+
+        // File should not be marked as having any segments written.
+        assert_eq!(assembler.get_file_progress("j1", "f1"), (0, 2));
+    }
+
+    #[test]
+    fn test_empty_data_does_not_advance_progress() {
+        let tmp = TempDir::new().unwrap();
+        let assembler = FileAssembler::new();
+        setup_file(&assembler, tmp.path(), "j1", "f1", "partial.bin", 3);
+
+        // Write a valid segment first.
+        assembler
+            .assemble_article("j1", "f1", 1, 0, b"GOOD")
+            .unwrap();
+        assert_eq!(assembler.get_file_progress("j1", "f1"), (1, 3));
+
+        // Empty segment should fail without advancing progress.
+        let result = assembler.assemble_article("j1", "f1", 2, 4, b"");
+        assert!(result.is_err());
+        assert_eq!(
+            assembler.get_file_progress("j1", "f1"),
+            (1, 3),
+            "Progress must not advance after empty segment error"
+        );
+        assert_eq!(
+            assembler.missing_segments("j1", "f1"),
+            vec![2, 3],
+            "Empty segment should still be listed as missing"
+        );
+    }
+
+    #[test]
+    fn test_empty_data_does_not_create_zero_byte_file() {
+        let tmp = TempDir::new().unwrap();
+        let assembler = FileAssembler::new();
+        let path = setup_file(&assembler, tmp.path(), "j1", "f1", "zero.bin", 1);
+
+        // Single segment with empty data — must not produce a completed file.
+        let result = assembler.assemble_article("j1", "f1", 1, 0, b"");
+        assert!(result.is_err());
+        assert!(!assembler.is_file_complete("j1", "f1"));
+
+        // File on disk should be empty (opened but never written to).
+        let contents = fs::read(&path).unwrap();
+        assert!(
+            contents.is_empty(),
+            "File should have no content after rejected empty segment"
+        );
+    }
+
+    #[test]
+    fn test_valid_data_after_empty_rejection_succeeds() {
+        // After an empty segment error, retrying with valid data should work.
+        let tmp = TempDir::new().unwrap();
+        let assembler = FileAssembler::new();
+        let path = setup_file(&assembler, tmp.path(), "j1", "f1", "retry.bin", 1);
+
+        // First attempt: empty → rejected.
+        let result = assembler.assemble_article("j1", "f1", 1, 0, b"");
+        assert!(result.is_err());
+
+        // Retry with valid data → should succeed and complete.
+        assert!(
+            assembler
+                .assemble_article("j1", "f1", 1, 0, b"VALID")
+                .unwrap()
+        );
+        assert!(assembler.is_file_complete("j1", "f1"));
+        assert_eq!(fs::read(&path).unwrap(), b"VALID");
     }
 }
