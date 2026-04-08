@@ -4,7 +4,7 @@ version = "0.1.1"
 edition = "2024"
 description = "yEnc decoding, file assembly, and article cache for NZB download clients"
 license = "MIT"
-repository = "http://100.92.54.45:3002/indexarr/nzb-decode"
+repository = "https://github.com/AusAgentSmith-org/nzb-decode"
 
 [dependencies]
 bytes = "1"
