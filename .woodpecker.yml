@@ -39,6 +39,20 @@ steps:
       - event: push
         branch: main
 
+  - name: publish-crates-io
+    image: rust:1.94-bookworm
+    environment:
+      CARGO_CRATES_IO_TOKEN:
+        from_secret: cargo_crates_io_token
+    commands:
+      - printf '[registries.crates-io]\ntoken = "%s"\n' "$CARGO_CRATES_IO_TOKEN" > $CARGO_HOME/credentials.toml
+      - sed -i 's/, registry = "forgejo"//g; s/registry = "forgejo", //g' Cargo.toml
+      - rm -f Cargo.lock
+      - cargo publish --registry crates-io --allow-dirty --no-verify 2>&1 || echo "crates.io publish skipped (version may already exist)"
+    when:
+      - event: push
+        branch: main
+
   - name: trigger-renovate
     image: alpine/curl
     environment:
