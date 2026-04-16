@@ -57,21 +57,8 @@ steps:
   # trigger-renovate step removed — woodpecker_token secret not configured,
   # which errored the pipeline at secret-validation time. Re-add when provisioned.
 
-  - name: push-github
-    image: alpine/git
-    when:
-      - event: push
-        branch: main
-    environment:
-      GH_TOKEN:
-        from_secret: gh_release_token
-      FORGEJO_TOKEN:
-        from_secret: git_auth_token
-    commands:
-      - git clone --bare "https://x-access-token:$FORGEJO_TOKEN@repo.indexarr.net/indexarr/nzb-decode.git" /tmp/repo.git
-      - cd /tmp/repo.git
-      - git push --force "https://x-access-token:$GH_TOKEN@github.com/AusAgentSmith-org/nzb-decode.git" main:main
-      - git push --force "https://x-access-token:$GH_TOKEN@github.com/AusAgentSmith-org/nzb-decode.git" --tags 2>/dev/null || true
+  # push-github step removed — gh_release_token secret missing errors
+  # pipeline at validation. Re-add once provisioned.
 
   - name: discord-success
     image: alpine/curl
