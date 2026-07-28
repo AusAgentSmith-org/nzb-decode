@@ -61,17 +61,33 @@ struct FileState {
 }
 
 impl FileState {
-    fn new(output_path: PathBuf, file: File, total_segments: u32) -> Self {
+    fn new(
+        output_path: PathBuf,
+        file: File,
+        total_segments: u32,
+        completed_segments: &[u32],
+    ) -> Self {
         let written: Vec<std::sync::atomic::AtomicU8> = (0..total_segments)
             .map(|_| std::sync::atomic::AtomicU8::new(0))
             .collect();
-        Self {
+        let state = Self {
             output_path,
             file,
             total_segments,
             written,
             written_count: AtomicU32::new(0),
+        };
+        for &segment_number in completed_segments {
+            if segment_number == 0 || segment_number > total_segments {
+                continue;
+            }
+            let idx = (segment_number - 1) as usize;
+            let prev = state.written[idx].swap(1, Ordering::Relaxed);
+            if prev == 0 {
+                state.written_count.fetch_add(1, Ordering::Relaxed);
+            }
         }
+        state
     }
 
     fn is_complete(&self) -> bool {
@@ -93,10 +109,11 @@ impl FileState {
             // CAS: only increment counter if this is the first time marking this segment
             let prev = self.written[idx].swap(1, Ordering::AcqRel);
             if prev == 0 {
-                self.written_count.fetch_add(1, Ordering::AcqRel);
+                let written = self.written_count.fetch_add(1, Ordering::AcqRel) + 1;
+                return written == self.total_segments;
             }
         }
-        self.is_complete()
+        false
     }
 
     /// Return a list of missing segment numbers (1-based).
@@ -154,6 +171,24 @@ impl FileAssembler {
         output_path: PathBuf,
         total_segments: u32,
     ) -> AssemblerResult<()> {
+        self.register_file_with_completed_segments(
+            job_id,
+            file_id,
+            output_path,
+            total_segments,
+            &[],
+        )
+    }
+
+    /// Register a file and seed any segments already written before resume.
+    pub fn register_file_with_completed_segments(
+        &self,
+        job_id: &str,
+        file_id: &str,
+        output_path: PathBuf,
+        total_segments: u32,
+        completed_segments: &[u32],
+    ) -> AssemblerResult<()> {
         // Ensure parent directory exists.
         if let Some(parent) = output_path.parent() {
             fs::create_dir_all(parent)?;
@@ -172,7 +207,10 @@ impl FileAssembler {
         };
 
         let mut files = self.files.write();
-        files.insert(key, FileState::new(output_path, file, total_segments));
+        files.insert(
+            key,
+            FileState::new(output_path, file, total_segments, completed_segments),
+        );
         Ok(())
     }
 
@@ -607,5 +645,44 @@ mod tests {
         );
         assert!(assembler.is_file_complete("j1", "f1"));
         assert_eq!(fs::read(&path).unwrap(), b"VALID");
+    }
+
+    #[test]
+    fn test_duplicate_write_after_completion_does_not_recomplete_file() {
+        let tmp = TempDir::new().unwrap();
+        let assembler = FileAssembler::new();
+        setup_file(&assembler, tmp.path(), "j1", "f1", "dup.bin", 2);
+
+        assert!(
+            !assembler
+                .assemble_article("j1", "f1", 1, 0, b"AAAA")
+                .unwrap()
+        );
+        assert!(
+            assembler
+                .assemble_article("j1", "f1", 2, 4, b"BBBB")
+                .unwrap()
+        );
+        assert!(
+            !assembler
+                .assemble_article("j1", "f1", 2, 4, b"BBBB")
+                .unwrap(),
+            "rewriting an already-complete segment must not report completion again"
+        );
+        assert_eq!(assembler.get_file_progress("j1", "f1"), (2, 2));
+    }
+
+    #[test]
+    fn test_register_with_completed_segments_restores_progress() {
+        let tmp = TempDir::new().unwrap();
+        let assembler = FileAssembler::new();
+        let path = tmp.path().join("restored.bin");
+        assembler
+            .register_file_with_completed_segments("j1", "f1", path, 3, &[3, 1, 3])
+            .unwrap();
+
+        assert_eq!(assembler.get_file_progress("j1", "f1"), (2, 3));
+        assert_eq!(assembler.missing_segments("j1", "f1"), vec![2]);
+        assert!(!assembler.is_file_complete("j1", "f1"));
     }
 }
